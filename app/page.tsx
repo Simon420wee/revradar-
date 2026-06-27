@@ -9,10 +9,11 @@ import {
 } from "recharts";
 import { useAuth } from "./context/AuthContext";
 import PublisherDashboard from "./components/PublisherDashboard";
-
-type PubStatus = "Aktivan" | "Neaktivan" | "Suspendovan";
-type PublisherMeta = { name: string; country: string; status: PubStatus; note: string; floorPrice: number };
-const PUB_META_KEY = "revradar_publisher_meta";
+import {
+  PubStatus, PublisherMeta, DailyEntry, AdUnitEntry,
+  getPublishers, setPublishers, getAllData, setAllData,
+  getAllAdUnits, setAllAdUnits, getMessages, setMessages, calcRpm,
+} from "./lib/store";
 
 // ════════════════════════════════════════════════════════════════════
 // DATA LAYER — stvarni podaci 7-9 jun + deterministički generisana istorija
@@ -528,21 +529,28 @@ export default function RevRadar() {
     if (!authLoading && !user) router.replace("/login");
   }, [authLoading, user, router]);
 
-  // ── Admin Panel — uredjivanje metapodataka publishera (localStorage) ──
+  // ── Admin Panel — store-backed metadata + dnevni podaci + ad units + poruke ──
   const [pubMeta, setPubMeta] = useState<Record<string, PublisherMeta>>({});
+  const [storeData, setStoreData] = useState<Record<string, DailyEntry[]>>({});
+  const [storeAdUnits, setStoreAdUnits] = useState<Record<string, AdUnitEntry[]>>({});
+  const [storeMessages, setStoreMessages] = useState<Record<string, string>>({});
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(PUB_META_KEY);
-      if (raw) setPubMeta(JSON.parse(raw));
-    } catch {
-      // ignorisi nevalidan localStorage sadrzaj
-    }
+    setPubMeta(getPublishers());
+    setStoreData(getAllData());
+    setStoreAdUnits(getAllAdUnits());
+    setStoreMessages(getMessages());
   }, []);
-  const savePubMeta = (next: Record<string, PublisherMeta>) => {
-    setPubMeta(next);
-    localStorage.setItem(PUB_META_KEY, JSON.stringify(next));
+
+  type ModalState = {
+    key: string | null;
+    tab: 1 | 2 | 3 | 4;
+    meta: PublisherMeta;
+    daily: DailyEntry[];
+    dailyDraft: DailyEntry;
+    adUnits: AdUnitEntry[];
+    message: string;
   };
-  const [editingModal, setEditingModal] = useState<{ key: string | null; data: PublisherMeta } | null>(null);
+  const [editingModal, setEditingModal] = useState<ModalState | null>(null);
 
   // ── Učitavanje podataka sa /api/data — samo za admin ──
   const [fetchedData, setFetchedData] = useState<Row[] | null>(null);
@@ -747,16 +755,59 @@ export default function RevRadar() {
     return [...set];
   }, [sourcePublishers, pubMeta]);
 
-  const openAddPubMeta = () => setEditingModal({ key: null, data: { name: "", country: "HR", status: "Aktivan", note: "", floorPrice: 0 } });
-  const openEditPubMeta = (pub: string) => setEditingModal({
-    key: pub,
-    data: pubMeta[pub] ?? { name: pub, country: getCountry(pub), status: "Aktivan", note: "", floorPrice: 0 },
+  const todayStr = lastDate ?? new Date().toISOString().slice(0, 10);
+  const emptyDraft = (): DailyEntry => ({ date: todayStr, impressions: 0, revenue: 0, rpm: 0 });
+
+  const openAddPubMeta = () => setEditingModal({
+    key: null, tab: 1,
+    meta: { name: "", country: "HR", status: "Aktivan", note: "" },
+    daily: [], dailyDraft: emptyDraft(), adUnits: [], message: "",
   });
+  const openEditPubMeta = (pub: string) => setEditingModal({
+    key: pub, tab: 1,
+    meta: pubMeta[pub] ?? { name: pub, country: getCountry(pub), status: "Aktivan", note: "" },
+    daily: [...(storeData[pub] ?? [])].sort((a, b) => a.date.localeCompare(b.date)),
+    dailyDraft: emptyDraft(),
+    adUnits: storeAdUnits[pub] ?? [],
+    message: storeMessages[pub] ?? "",
+  });
+
+  // TAB 2 — dodaj/azuriraj dnevni unos (po datumu)
+  const addDailyEntry = () => {
+    setEditingModal(m => {
+      if (!m) return m;
+      const d = m.dailyDraft;
+      if (!d.date || d.impressions <= 0) return m;
+      const rest = m.daily.filter(x => x.date !== d.date);
+      const daily = [...rest, { ...d }].sort((a, b) => a.date.localeCompare(b.date));
+      return { ...m, daily, dailyDraft: emptyDraft() };
+    });
+  };
+  const removeDailyEntry = (date: string) =>
+    setEditingModal(m => m && { ...m, daily: m.daily.filter(x => x.date !== date) });
+
+  // TAB 3 — ad units CRUD
+  const addAdUnit = () =>
+    setEditingModal(m => m && { ...m, adUnits: [...m.adUnits, { id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, name: "Novi ad unit", impressions: 0, revenue: 0, rpm: 0, fillRate: 0, viewability: 0 }] });
+  const updateAdUnit = (id: string, patch: Partial<AdUnitEntry>) =>
+    setEditingModal(m => m && { ...m, adUnits: m.adUnits.map(u => u.id === id ? { ...u, ...patch } : u) });
+  const removeAdUnit = (id: string) =>
+    setEditingModal(m => m && { ...m, adUnits: m.adUnits.filter(u => u.id !== id) });
+
   const saveEditingModal = () => {
     if (!editingModal) return;
-    const finalKey = editingModal.key ?? editingModal.data.name.trim();
+    const finalKey = (editingModal.key ?? editingModal.meta.name).trim();
     if (!finalKey) return;
-    savePubMeta({ ...pubMeta, [finalKey]: { ...editingModal.data, name: finalKey } });
+    const nextMeta = { ...pubMeta, [finalKey]: { ...editingModal.meta, name: finalKey } };
+    const nextData = { ...storeData, [finalKey]: editingModal.daily };
+    const nextAd = { ...storeAdUnits, [finalKey]: editingModal.adUnits };
+    const nextMsg = { ...storeMessages };
+    if (editingModal.message.trim()) nextMsg[finalKey] = editingModal.message;
+    else delete nextMsg[finalKey];
+    setPubMeta(nextMeta); setPublishers(nextMeta);
+    setStoreData(nextData); setAllData(nextData);
+    setStoreAdUnits(nextAd); setAllAdUnits(nextAd);
+    setStoreMessages(nextMsg); setMessages(nextMsg);
     setEditingModal(null);
   };
 
@@ -1776,7 +1827,7 @@ export default function RevRadar() {
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 24, gap: 16 }}>
               <div>
                 <h1 style={{ fontSize: 22, fontWeight: 700, color: "#f1f5f9", margin: 0 }}>Admin Panel</h1>
-                <p style={{ color: "#4b5563", fontSize: 13, margin: "4px 0 0" }}>Uredi metapodatke publishera · čuva se lokalno</p>
+                <p style={{ color: "#4b5563", fontSize: 13, margin: "4px 0 0" }}>Unesi podatke po publisheru · čuva se lokalno · publisher vidi svoje</p>
               </div>
               <motion.button
                 onClick={openAddPubMeta}
@@ -1789,8 +1840,8 @@ export default function RevRadar() {
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
                 <thead>
                   <tr style={{ background: "rgba(255,255,255,0.03)", borderBottom: "1px solid rgba(255,255,255,0.07)" }}>
-                    {["Naziv", "Zemlja", "Status", "Floor Price", "Napomena", ""].map(h => (
-                      <th key={h} style={{ textAlign: h === "Naziv" || h === "Napomena" ? "left" : h === "" ? "center" : "right", padding: "14px 16px", fontSize: 11, color: "#4b5563", fontWeight: 600, letterSpacing: 0.8, textTransform: "uppercase" }}>{h}</th>
+                    {["Naziv", "Zemlja", "Status", "Dana uneto", "Ad Units", "Poruka", ""].map(h => (
+                      <th key={h} style={{ textAlign: h === "Naziv" ? "left" : h === "" ? "center" : "right", padding: "14px 16px", fontSize: 11, color: "#4b5563", fontWeight: 600, letterSpacing: 0.8, textTransform: "uppercase" }}>{h}</th>
                     ))}
                   </tr>
                 </thead>
@@ -1799,17 +1850,22 @@ export default function RevRadar() {
                     const meta = pubMeta[pub];
                     const status = meta?.status ?? "Aktivan";
                     const sc = status === "Aktivan" ? "#4ade80" : status === "Suspendovan" ? "#f87171" : "#6b7280";
+                    const dayCount = storeData[pub]?.length ?? 0;
+                    const auCount = storeAdUnits[pub]?.length ?? 0;
+                    const hasMsg = !!storeMessages[pub]?.trim();
+                    const ctry = meta?.country ?? getCountry(pub);
                     return (
                       <tr key={pub} style={{ borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
                         <td style={{ padding: "12px 16px", fontSize: 13, fontWeight: 500, color: "#a5b4fc" }}>{pub}</td>
-                        <td style={{ padding: "12px 16px" }}>
-                          <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 6, background: `${COUNTRY_COLOR[meta?.country ?? getCountry(pub)] ?? "#6b7280"}22`, color: COUNTRY_COLOR[meta?.country ?? getCountry(pub)] ?? "#6b7280", fontWeight: 700 }}>{meta?.country ?? getCountry(pub)}</span>
+                        <td style={{ textAlign: "right", padding: "12px 16px" }}>
+                          <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 6, background: `${COUNTRY_COLOR[ctry] ?? "#6b7280"}22`, color: COUNTRY_COLOR[ctry] ?? "#6b7280", fontWeight: 700 }}>{ctry}</span>
                         </td>
                         <td style={{ textAlign: "right", padding: "12px 16px" }}>
                           <span style={{ fontSize: 11, padding: "3px 10px", borderRadius: 99, background: `${sc}18`, color: sc, fontWeight: 600, border: `1px solid ${sc}40` }}>{status}</span>
                         </td>
-                        <td style={{ textAlign: "right", padding: "12px 16px", fontSize: 13, color: "#94a3b8" }}>{meta?.floorPrice ? `€${meta.floorPrice.toFixed(2)}` : "—"}</td>
-                        <td style={{ padding: "12px 16px", fontSize: 12, color: "#6b7280", maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{meta?.note || "—"}</td>
+                        <td style={{ textAlign: "right", padding: "12px 16px", fontSize: 13, color: dayCount ? "#94a3b8" : "#374151" }}>{dayCount || "—"}</td>
+                        <td style={{ textAlign: "right", padding: "12px 16px", fontSize: 13, color: auCount ? "#94a3b8" : "#374151" }}>{auCount || "—"}</td>
+                        <td style={{ textAlign: "right", padding: "12px 16px", fontSize: 13, color: hasMsg ? "#fbbf24" : "#374151" }}>{hasMsg ? "✉" : "—"}</td>
                         <td style={{ textAlign: "center", padding: "12px 16px" }}>
                           <button onClick={() => openEditPubMeta(pub)} style={{ background: "rgba(99,102,241,0.12)", border: "1px solid rgba(99,102,241,0.3)", borderRadius: 8, padding: "5px 12px", color: "#a5b4fc", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
                             Edit
@@ -1894,50 +1950,167 @@ export default function RevRadar() {
               initial={{ opacity: 0, y: -12, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: -12, scale: 0.98 }}
               transition={{ duration: 0.18, ease: "easeOut" }}
               onClick={e => e.stopPropagation()}
-              style={{ width: 420, maxWidth: "90vw", background: "linear-gradient(160deg, rgba(30,35,48,0.98), rgba(15,18,26,0.98))", border: "1px solid rgba(129,140,248,0.3)", borderRadius: 16, boxShadow: "0 30px 80px rgba(0,0,0,0.6), 0 0 60px rgba(99,102,241,0.15)", padding: 28 }}>
-              <h2 style={{ fontSize: 17, fontWeight: 700, color: "#f1f5f9", margin: "0 0 20px" }}>{editingModal.key ? "Uredi publishera" : "Dodaj publishera"}</h2>
+              style={{ width: 640, maxWidth: "92vw", maxHeight: "88vh", display: "flex", flexDirection: "column", background: "linear-gradient(160deg, rgba(30,35,48,0.98), rgba(15,18,26,0.98))", border: "1px solid rgba(129,140,248,0.3)", borderRadius: 16, boxShadow: "0 30px 80px rgba(0,0,0,0.6), 0 0 60px rgba(99,102,241,0.15)" }}>
+              {/* Header + tabovi */}
+              <div style={{ padding: "24px 28px 0" }}>
+                <h2 style={{ fontSize: 17, fontWeight: 700, color: "#f1f5f9", margin: "0 0 4px" }}>{editingModal.key ?? (editingModal.meta.name || "Novi publisher")}</h2>
+                <p style={{ fontSize: 12, color: "#6b7280", margin: "0 0 16px" }}>{editingModal.key ? "Uredi podatke publishera" : "Dodaj novog publishera"}</p>
+                <div style={{ display: "flex", gap: 4, borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+                  {([[1, "Osnovni"], [2, "Dnevni podaci"], [3, "Ad Units"], [4, "Poruka"]] as const).map(([t, label]) => (
+                    <button key={t} onClick={() => setEditingModal(m => m && { ...m, tab: t })}
+                      style={{ background: "none", border: "none", borderBottom: editingModal.tab === t ? "2px solid #818cf8" : "2px solid transparent", cursor: "pointer", padding: "10px 14px", fontSize: 13, fontWeight: 600, color: editingModal.tab === t ? "#a5b4fc" : "#6b7280", marginBottom: -1 }}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
 
-              <label style={{ fontSize: 12, color: "#6b7280", display: "block", marginBottom: 6 }}>Naziv publishera</label>
-              <input
-                value={editingModal.data.name}
-                disabled={!!editingModal.key}
-                onChange={e => setEditingModal(m => m && { ...m, data: { ...m.data, name: e.target.value } })}
-                style={{ width: "100%", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 13, outline: "none", marginBottom: 14, boxSizing: "border-box", opacity: editingModal.key ? 0.6 : 1 }}
-              />
+              {/* Telo taba */}
+              <div style={{ padding: "20px 28px", overflowY: "auto", flex: 1 }}>
+                {/* TAB 1 — Osnovni podaci */}
+                {editingModal.tab === 1 && (
+                  <>
+                    <label style={{ fontSize: 12, color: "#6b7280", display: "block", marginBottom: 6 }}>Naziv publishera</label>
+                    <input
+                      value={editingModal.meta.name}
+                      disabled={!!editingModal.key}
+                      onChange={e => setEditingModal(m => m && { ...m, meta: { ...m.meta, name: e.target.value } })}
+                      style={{ width: "100%", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 13, outline: "none", marginBottom: 14, boxSizing: "border-box", opacity: editingModal.key ? 0.6 : 1 }}
+                    />
+                    <label style={{ fontSize: 12, color: "#6b7280", display: "block", marginBottom: 6 }}>Zemlja</label>
+                    <select
+                      value={editingModal.meta.country}
+                      onChange={e => setEditingModal(m => m && { ...m, meta: { ...m.meta, country: e.target.value } })}
+                      style={{ width: "100%", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 13, outline: "none", marginBottom: 14 }}>
+                      {["HR", "RS", "BA", "ME", "MK"].map(c => <option key={c} value={c} style={{ background: "#1e2330" }}>{c}</option>)}
+                    </select>
+                    <label style={{ fontSize: 12, color: "#6b7280", display: "block", marginBottom: 6 }}>Status</label>
+                    <select
+                      value={editingModal.meta.status}
+                      onChange={e => setEditingModal(m => m && { ...m, meta: { ...m.meta, status: e.target.value as PubStatus } })}
+                      style={{ width: "100%", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 13, outline: "none", marginBottom: 14 }}>
+                      {(["Aktivan", "Neaktivan", "Suspendovan"] as PubStatus[]).map(s => <option key={s} value={s} style={{ background: "#1e2330" }}>{s}</option>)}
+                    </select>
+                    <label style={{ fontSize: 12, color: "#6b7280", display: "block", marginBottom: 6 }}>Napomena (interno)</label>
+                    <textarea
+                      value={editingModal.meta.note}
+                      onChange={e => setEditingModal(m => m && { ...m, meta: { ...m.meta, note: e.target.value } })}
+                      rows={3}
+                      style={{ width: "100%", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 13, outline: "none", boxSizing: "border-box", resize: "vertical" }}
+                    />
+                  </>
+                )}
 
-              <label style={{ fontSize: 12, color: "#6b7280", display: "block", marginBottom: 6 }}>Zemlja</label>
-              <select
-                value={editingModal.data.country}
-                onChange={e => setEditingModal(m => m && { ...m, data: { ...m.data, country: e.target.value } })}
-                style={{ width: "100%", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 13, outline: "none", marginBottom: 14 }}>
-                {["HR", "RS", "BA", "ME", "MK"].map(c => <option key={c} value={c} style={{ background: "#1e2330" }}>{c}</option>)}
-              </select>
+                {/* TAB 2 — Dnevni podaci */}
+                {editingModal.tab === 2 && (
+                  <>
+                    <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr 1fr 1fr auto", gap: 8, alignItems: "end", marginBottom: 16 }}>
+                      {([["date", "Datum", "date"], ["impressions", "Impressions", "number"], ["revenue", "Revenue €", "number"], ["rpm", "RPM €", "number"]] as const).map(([field, label, type]) => (
+                        <div key={field}>
+                          <label style={{ fontSize: 11, color: "#6b7280", display: "block", marginBottom: 5 }}>{label}</label>
+                          <input
+                            type={type} step={field === "rpm" ? "0.001" : field === "revenue" ? "0.01" : "1"}
+                            value={editingModal.dailyDraft[field]}
+                            onChange={e => setEditingModal(m => {
+                              if (!m) return m;
+                              const raw = field === "date" ? e.target.value : (parseFloat(e.target.value) || 0);
+                              const draft = { ...m.dailyDraft, [field]: raw };
+                              if (field === "impressions" || field === "revenue") draft.rpm = calcRpm(draft.impressions, draft.revenue);
+                              return { ...m, dailyDraft: draft };
+                            })}
+                            style={{ width: "100%", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, padding: "8px 10px", color: "#e2e8f0", fontSize: 12, outline: "none", boxSizing: "border-box" }}
+                          />
+                        </div>
+                      ))}
+                      <button onClick={addDailyEntry} style={{ background: "linear-gradient(135deg,#6366f1,#8b5cf6)", border: "none", borderRadius: 8, padding: "9px 14px", color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>+ Dodaj</button>
+                    </div>
+                    {editingModal.daily.length === 0 ? (
+                      <div style={{ textAlign: "center", padding: "28px 0", color: "#4b5563", fontSize: 13 }}>Još nema unetih dana</div>
+                    ) : (
+                      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                        <thead>
+                          <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.07)" }}>
+                            {["Datum", "Impressions", "Revenue", "RPM", ""].map(h => (
+                              <th key={h} style={{ textAlign: h === "Datum" ? "left" : h === "" ? "center" : "right", padding: "8px 10px", fontSize: 10, color: "#4b5563", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.6 }}>{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {[...editingModal.daily].sort((a, b) => b.date.localeCompare(a.date)).map(d => (
+                            <tr key={d.date} style={{ borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
+                              <td style={{ padding: "8px 10px", fontSize: 12, color: "#94a3b8" }}>{d.date}</td>
+                              <td style={{ textAlign: "right", padding: "8px 10px", fontSize: 12, color: "#94a3b8" }}>{fmt(d.impressions)}</td>
+                              <td style={{ textAlign: "right", padding: "8px 10px", fontSize: 12, color: "#a5b4fc", fontWeight: 600 }}>{fmtEur(d.revenue)}</td>
+                              <td style={{ textAlign: "right", padding: "8px 10px", fontSize: 12, color: "#7dd3fc" }}>{fmtRpm(d.rpm)}</td>
+                              <td style={{ textAlign: "center", padding: "8px 10px" }}>
+                                <button onClick={() => removeDailyEntry(d.date)} style={{ background: "none", border: "none", color: "#f87171", fontSize: 14, cursor: "pointer" }}>✕</button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </>
+                )}
 
-              <label style={{ fontSize: 12, color: "#6b7280", display: "block", marginBottom: 6 }}>Status</label>
-              <select
-                value={editingModal.data.status}
-                onChange={e => setEditingModal(m => m && { ...m, data: { ...m.data, status: e.target.value as PubStatus } })}
-                style={{ width: "100%", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 13, outline: "none", marginBottom: 14 }}>
-                {(["Aktivan", "Neaktivan", "Suspendovan"] as PubStatus[]).map(s => <option key={s} value={s} style={{ background: "#1e2330" }}>{s}</option>)}
-              </select>
+                {/* TAB 3 — Ad Units */}
+                {editingModal.tab === 3 && (
+                  <>
+                    <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}>
+                      <button onClick={addAdUnit} style={{ background: "rgba(99,102,241,0.14)", border: "1px solid rgba(99,102,241,0.3)", borderRadius: 8, padding: "7px 14px", color: "#a5b4fc", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>+ Dodaj ad unit</button>
+                    </div>
+                    {editingModal.adUnits.length === 0 ? (
+                      <div style={{ textAlign: "center", padding: "28px 0", color: "#4b5563", fontSize: 13 }}>Još nema ad units</div>
+                    ) : (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                        {editingModal.adUnits.map(u => (
+                          <div key={u.id} style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: 12 }}>
+                            <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                              <input value={u.name} onChange={e => updateAdUnit(u.id, { name: e.target.value })} placeholder="Naziv"
+                                style={{ flex: 1, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, padding: "8px 10px", color: "#e2e8f0", fontSize: 12, outline: "none" }} />
+                              <button onClick={() => removeAdUnit(u.id)} style={{ background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.25)", borderRadius: 8, padding: "0 12px", color: "#f87171", fontSize: 13, cursor: "pointer" }}>✕</button>
+                            </div>
+                            <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 8 }}>
+                              {([["impressions", "Impr."], ["revenue", "Rev €"], ["rpm", "RPM €"], ["fillRate", "Fill %"], ["viewability", "View %"]] as const).map(([f, lbl]) => (
+                                <div key={f}>
+                                  <label style={{ fontSize: 10, color: "#6b7280", display: "block", marginBottom: 4 }}>{lbl}</label>
+                                  <input type="number" step={f === "rpm" ? "0.001" : f === "revenue" ? "0.01" : "1"} value={u[f]}
+                                    onChange={e => {
+                                      const val = parseFloat(e.target.value) || 0;
+                                      if (f === "impressions") updateAdUnit(u.id, { impressions: val, rpm: calcRpm(val, u.revenue) });
+                                      else if (f === "revenue") updateAdUnit(u.id, { revenue: val, rpm: calcRpm(u.impressions, val) });
+                                      else updateAdUnit(u.id, { [f]: val });
+                                    }}
+                                    style={{ width: "100%", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, padding: "6px 8px", color: "#e2e8f0", fontSize: 12, outline: "none", boxSizing: "border-box" }} />
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                )}
 
-              <label style={{ fontSize: 12, color: "#6b7280", display: "block", marginBottom: 6 }}>Floor price (€)</label>
-              <input
-                type="number" step="0.01"
-                value={editingModal.data.floorPrice}
-                onChange={e => setEditingModal(m => m && { ...m, data: { ...m.data, floorPrice: parseFloat(e.target.value) || 0 } })}
-                style={{ width: "100%", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 13, outline: "none", marginBottom: 14, boxSizing: "border-box" }}
-              />
+                {/* TAB 4 — Poruka publisheru */}
+                {editingModal.tab === 4 && (
+                  <>
+                    <label style={{ fontSize: 12, color: "#6b7280", display: "block", marginBottom: 6 }}>Poruka publisheru (prikazuje se kao banner na njegovom dashboardu)</label>
+                    <textarea
+                      value={editingModal.message}
+                      onChange={e => setEditingModal(m => m && { ...m, message: e.target.value })}
+                      rows={6} placeholder="npr. RPM je opao zbog sezonskog pada — radimo na optimizaciji floor price-a."
+                      style={{ width: "100%", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, padding: "10px 12px", color: "#e2e8f0", fontSize: 13, outline: "none", boxSizing: "border-box", resize: "vertical", lineHeight: 1.5 }}
+                    />
+                    {editingModal.message.trim() && (
+                      <div style={{ marginTop: 8, fontSize: 11, color: "#6b7280" }}>Ostavi prazno da ukloniš poruku.</div>
+                    )}
+                  </>
+                )}
+              </div>
 
-              <label style={{ fontSize: 12, color: "#6b7280", display: "block", marginBottom: 6 }}>Napomena (interno)</label>
-              <textarea
-                value={editingModal.data.note}
-                onChange={e => setEditingModal(m => m && { ...m, data: { ...m.data, note: e.target.value } })}
-                rows={3}
-                style={{ width: "100%", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 13, outline: "none", marginBottom: 20, boxSizing: "border-box", resize: "vertical" }}
-              />
-
-              <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+              {/* Footer */}
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, padding: "16px 28px", borderTop: "1px solid rgba(255,255,255,0.08)" }}>
                 <button onClick={() => setEditingModal(null)} style={{ background: "none", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 8, padding: "9px 16px", color: "#94a3b8", fontSize: 13, cursor: "pointer" }}>
                   Otkaži
                 </button>
@@ -1945,7 +2118,7 @@ export default function RevRadar() {
                   onClick={saveEditingModal}
                   whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }}
                   style={{ background: "linear-gradient(135deg,#6366f1,#8b5cf6)", border: "none", borderRadius: 8, padding: "9px 18px", color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
-                  Sačuvaj
+                  Sačuvaj sve
                 </motion.button>
               </div>
             </motion.div>
