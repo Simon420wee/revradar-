@@ -1,8 +1,9 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #060912;
+  --foreground: #e2e8f0;
 }
 
 @theme inline {
@@ -12,15 +13,51 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html, body {
+  background: #060912;
+  color: var(--foreground);
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* ── Premium scrollbar ── */
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(99,102,241,0.45), rgba(139,92,246,0.45));
+  border-radius: 99px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(99,102,241,0.7), rgba(139,92,246,0.7));
+  background-clip: padding-box;
+}
+
+/* ── Neon glow na grafikonima (Recharts) ── */
+.recharts-line-curve,
+.recharts-area-curve {
+  filter: drop-shadow(0 0 6px rgba(129,140,248,0.55));
+}
+.recharts-area-area {
+  filter: drop-shadow(0 0 10px rgba(129,140,248,0.22));
+}
+.recharts-bar-rectangle path,
+.recharts-radial-bar-sector {
+  filter: drop-shadow(0 0 5px rgba(129,140,248,0.45));
+}
+.recharts-sector {
+  filter: drop-shadow(0 0 7px rgba(129,140,248,0.35));
+}
+
+/* ── Suptilan drift aurore u pozadini ── */
+@keyframes auroraDrift {
+  0%   { transform: translate3d(0, 0, 0) scale(1); }
+  50%  { transform: translate3d(2%, -1.5%, 0) scale(1.05); }
+  100% { transform: translate3d(0, 0, 0) scale(1); }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
