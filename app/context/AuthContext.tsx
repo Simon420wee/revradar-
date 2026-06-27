@@ -8,17 +8,7 @@ export type AuthUser = { email: string; role: Role; publisher?: string };
 // Demo kredencijali — hardkodirano dok ne postoji backend auth.
 const CREDENTIALS: Record<string, { password: string; role: Role; publisher?: string }> = {
   "admin@revradar.com": { password: "admin2026", role: "admin" },
-  "wireless@revradar.com": { password: "pub2026", role: "publisher", publisher: "Wireless Media Group" },
-  "novosti@revradar.com": { password: "pub2026", role: "publisher", publisher: "[RS] Novosti" },
-  "srbijadanas@revradar.com": { password: "pub2026", role: "publisher", publisher: "[RS] Srbija Danas Doo" },
-  "24sata@revradar.com": { password: "pub2026", role: "publisher", publisher: "[HR] 24sata" },
-  "hercegovina@revradar.com": { password: "pub2026", role: "publisher", publisher: "Hercegovina Info" },
   "oslobodjenje@revradar.com": { password: "pub2026", role: "publisher", publisher: "Oslobodjenje" },
-  "sektor51@revradar.com": { password: "pub2026", role: "publisher", publisher: "SEKTOR 51" },
-  "vecernji@revradar.com": { password: "pub2026", role: "publisher", publisher: "[HR] Večernji list" },
-  "buka@revradar.com": { password: "pub2026", role: "publisher", publisher: "Buka Magazin" },
-  "hotsport@revradar.com": { password: "pub2026", role: "publisher", publisher: "HotSport RS" },
-  "rtvslon@revradar.com": { password: "pub2026", role: "publisher", publisher: "RTV SLON" },
 };
 
 const STORAGE_KEY = "revradar_auth_user";

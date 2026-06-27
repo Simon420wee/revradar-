@@ -19,11 +19,7 @@ import {
 // DATA LAYER — stvarni podaci 7-9 jun + deterministički generisana istorija
 // ════════════════════════════════════════════════════════════════════
 
-const PUBLISHERS = [
-  "Buka Magazin", "SEKTOR 51", "Wireless Media Group", "[HR] 24sata",
-  "Hercegovina Info", "HotSport RS", "[RS] Novosti", "Oslobodjenje",
-  "[HR] Večernji list", "RTV SLON", "[RS] Srbija Danas Doo"
-];
+const PUBLISHERS = ["Oslobodjenje"];
 
 type Row = { date: string; publisher: string; impressions: number; revenue: number; rpm: number };
 
@@ -37,16 +33,10 @@ function seededRandom(seed: number): number {
 }
 
 const BASE_RPM: Record<string, number> = {
-  "Buka Magazin": 0.22, "SEKTOR 51": 0.78, "Wireless Media Group": 0.53,
-  "[HR] 24sata": 0.24, "Hercegovina Info": 0.65, "HotSport RS": 0.23,
-  "[RS] Novosti": 0.27, "Oslobodjenje": 0.64, "[HR] Večernji list": 0.26,
-  "RTV SLON": 0.13, "[RS] Srbija Danas Doo": 0.44
+  "Oslobodjenje": 0.64
 };
 const BASE_IMP: Record<string, number> = {
-  "Buka Magazin": 50000, "SEKTOR 51": 40000, "Wireless Media Group": 900000,
-  "[HR] 24sata": 310000, "Hercegovina Info": 88000, "HotSport RS": 5000,
-  "[RS] Novosti": 520000, "Oslobodjenje": 60000, "[HR] Večernji list": 90000,
-  "RTV SLON": 8000, "[RS] Srbija Danas Doo": 220000
+  "Oslobodjenje": 60000
 };
 
 const NETWORK_AVG_RPM = 0.43; // prosek mreže
@@ -514,7 +504,7 @@ export default function RevRadar() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [simRpmBoost, setSimRpmBoost] = useState(0.05);
   const [simImpBoost, setSimImpBoost] = useState(0);
-  const [simPublisher, setSimPublisher] = useState("Wireless Media Group");
+  const [simPublisher, setSimPublisher] = useState("Oslobodjenje");
   const [pubRange, setPubRange] = useState<7 | 30 | 90>(7);
   const [cmpPubs, setCmpPubs] = useState<string[]>(() => PUBLISHERS.slice(0, 2));
   const [cmpRange, setCmpRange] = useState<7 | 30 | 90>(30);
@@ -1722,7 +1712,7 @@ export default function RevRadar() {
                 <div style={{ fontSize: 13, color: "#86efac" }}>
                   ✓ Importovani podaci su aktivni — {importedData.length} redova, {new Set(importedData.map(r => r.publisher)).size} publishera
                 </div>
-                <button onClick={() => { setImportedData(null); setSimPublisher("Wireless Media Group"); setCmpPubs(PUBLISHERS.slice(0, 2)); }} style={{ background: "none", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 8, padding: "7px 14px", color: "#94a3b8", fontSize: 12, cursor: "pointer" }}>
+                <button onClick={() => { setImportedData(null); setSimPublisher("Oslobodjenje"); setCmpPubs(PUBLISHERS.slice(0, 2)); }} style={{ background: "none", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 8, padding: "7px 14px", color: "#94a3b8", fontSize: 12, cursor: "pointer" }}>
                   Vrati demo podatke
                 </button>
               </div>
