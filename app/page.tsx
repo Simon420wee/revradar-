@@ -1,11 +1,18 @@
 "use client";
 
 import { useState, useMemo, useEffect, useRef } from "react";
+import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, AreaChart, Area, PieChart, Pie, Cell
 } from "recharts";
+import { useAuth } from "./context/AuthContext";
+import PublisherDashboard from "./components/PublisherDashboard";
+
+type PubStatus = "Aktivan" | "Neaktivan" | "Suspendovan";
+type PublisherMeta = { name: string; country: string; status: PubStatus; note: string; floorPrice: number };
+const PUB_META_KEY = "revradar_publisher_meta";
 
 // ════════════════════════════════════════════════════════════════════
 // DATA LAYER — stvarni podaci 7-9 jun + deterministički generisana istorija
@@ -493,6 +500,8 @@ function CountUp({ value, format, duration = 800 }: { value: number; format: (n:
 // ════════════════════════════════════════════════════════════════════
 
 export default function RevRadar() {
+  const { user, loading: authLoading, logout } = useAuth();
+  const router = useRouter();
   const [page, setPage] = useState("overview");
   const [selectedPub, setSelectedPub] = useState<string | null>(null);
   const [navLoading, setNavLoading] = useState(false);
@@ -514,13 +523,35 @@ export default function RevRadar() {
   const [pdfBusy, setPdfBusy] = useState(false);
   const pdfRef = useRef<HTMLDivElement>(null);
 
-  // ── Učitavanje podataka sa /api/data ──
+  // ── Route protection — bez logina nazad na /login ──
+  useEffect(() => {
+    if (!authLoading && !user) router.replace("/login");
+  }, [authLoading, user, router]);
+
+  // ── Admin Panel — uredjivanje metapodataka publishera (localStorage) ──
+  const [pubMeta, setPubMeta] = useState<Record<string, PublisherMeta>>({});
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(PUB_META_KEY);
+      if (raw) setPubMeta(JSON.parse(raw));
+    } catch {
+      // ignorisi nevalidan localStorage sadrzaj
+    }
+  }, []);
+  const savePubMeta = (next: Record<string, PublisherMeta>) => {
+    setPubMeta(next);
+    localStorage.setItem(PUB_META_KEY, JSON.stringify(next));
+  };
+  const [editingModal, setEditingModal] = useState<{ key: string | null; data: PublisherMeta } | null>(null);
+
+  // ── Učitavanje podataka sa /api/data — samo za admin ──
   const [fetchedData, setFetchedData] = useState<Row[] | null>(null);
   const [dataLoading, setDataLoading] = useState(true);
   const [dataError, setDataError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
+    if (user?.role !== "admin") return;
     let cancelled = false;
     fetch("/api/data")
       .then(res => {
@@ -534,7 +565,7 @@ export default function RevRadar() {
         if (!cancelled) { setDataError(e instanceof Error ? e.message : "Nepoznata greška"); setDataLoading(false); }
       });
     return () => { cancelled = true; };
-  }, [reloadKey]);
+  }, [reloadKey, user]);
 
   const retryLoad = () => { setDataError(null); setDataLoading(true); setReloadKey(k => k + 1); };
 
@@ -708,7 +739,26 @@ export default function RevRadar() {
     { id: "alerts", label: "Alerts", icon: "◎" },
     { id: "simulator", label: "Simulator", icon: "⟁" },
     { id: "import", label: "Import Data", icon: "⇪" },
+    { id: "admin", label: "Admin Panel", icon: "⚙" },
   ];
+
+  const allAdminPubs = useMemo(() => {
+    const set = new Set<string>([...sourcePublishers, ...Object.keys(pubMeta)]);
+    return [...set];
+  }, [sourcePublishers, pubMeta]);
+
+  const openAddPubMeta = () => setEditingModal({ key: null, data: { name: "", country: "HR", status: "Aktivan", note: "", floorPrice: 0 } });
+  const openEditPubMeta = (pub: string) => setEditingModal({
+    key: pub,
+    data: pubMeta[pub] ?? { name: pub, country: getCountry(pub), status: "Aktivan", note: "", floorPrice: 0 },
+  });
+  const saveEditingModal = () => {
+    if (!editingModal) return;
+    const finalKey = editingModal.key ?? editingModal.data.name.trim();
+    if (!finalKey) return;
+    savePubMeta({ ...pubMeta, [finalKey]: { ...editingModal.data, name: finalKey } });
+    setEditingModal(null);
+  };
 
   const changePage = (id: string, pub: string | null = null) => {
     if (id === page && pub === selectedPub) return;
@@ -840,6 +890,16 @@ export default function RevRadar() {
     }
   };
 
+  // ── Auth gate — bez logina ne renderuj dashboard ──
+  if (authLoading || !user) {
+    return <div style={{ minHeight: "100vh", background: AURORA_BG }} />;
+  }
+
+  // ── Publisher nalog → potpuno odvojen, jednostavan dashboard ──
+  if (user.role === "publisher" && user.publisher) {
+    return <PublisherDashboard publisherName={user.publisher} onLogout={() => { logout(); router.replace("/login"); }} />;
+  }
+
   // ── Loading / error ekrani dok se podaci učitavaju sa /api/data ──
   if (dataLoading) {
     return (
@@ -878,6 +938,7 @@ export default function RevRadar() {
               <div style={{ fontSize: 10, color: "#4b5563", letterSpacing: 0.5 }}>AD OPS ANALYTICS</div>
             </div>
           </div>
+          <span style={{ display: "inline-block", marginTop: 10, fontSize: 10, fontWeight: 700, letterSpacing: 0.8, color: "#c4b5fd", background: "rgba(139,92,246,0.16)", border: "1px solid rgba(139,92,246,0.35)", borderRadius: 99, padding: "3px 10px" }}>ADMIN</span>
         </div>
         <nav style={{ padding: "16px 12px", flex: 1 }}>
           {navItems.map(item => {
@@ -908,6 +969,9 @@ export default function RevRadar() {
               <span style={{ fontSize: 11, color: "#4ade80" }}>{activePubs} publishera aktivno</span>
             </div>
           </div>
+          <button onClick={() => { logout(); router.replace("/login"); }} style={{ width: "100%", marginTop: 10, background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.25)", borderRadius: 10, padding: "10px 14px", color: "#fca5a5", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+            ⏻ Logout
+          </button>
         </div>
       </div>
 
@@ -1706,6 +1770,60 @@ export default function RevRadar() {
           </>
         )}
 
+        {/* ════════ ADMIN PANEL ════════ */}
+        {page === "admin" && (
+          <>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 24, gap: 16 }}>
+              <div>
+                <h1 style={{ fontSize: 22, fontWeight: 700, color: "#f1f5f9", margin: 0 }}>Admin Panel</h1>
+                <p style={{ color: "#4b5563", fontSize: 13, margin: "4px 0 0" }}>Uredi metapodatke publishera · čuva se lokalno</p>
+              </div>
+              <motion.button
+                onClick={openAddPubMeta}
+                whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }}
+                style={{ background: "linear-gradient(135deg,#6366f1,#8b5cf6)", border: "none", borderRadius: 10, padding: "10px 18px", color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", boxShadow: "0 4px 16px rgba(99,102,241,0.3)" }}>
+                + Dodaj publishera
+              </motion.button>
+            </div>
+            <div style={{ ...card, padding: 0, overflow: "hidden" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
+                  <tr style={{ background: "rgba(255,255,255,0.03)", borderBottom: "1px solid rgba(255,255,255,0.07)" }}>
+                    {["Naziv", "Zemlja", "Status", "Floor Price", "Napomena", ""].map(h => (
+                      <th key={h} style={{ textAlign: h === "Naziv" || h === "Napomena" ? "left" : h === "" ? "center" : "right", padding: "14px 16px", fontSize: 11, color: "#4b5563", fontWeight: 600, letterSpacing: 0.8, textTransform: "uppercase" }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {allAdminPubs.map(pub => {
+                    const meta = pubMeta[pub];
+                    const status = meta?.status ?? "Aktivan";
+                    const sc = status === "Aktivan" ? "#4ade80" : status === "Suspendovan" ? "#f87171" : "#6b7280";
+                    return (
+                      <tr key={pub} style={{ borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
+                        <td style={{ padding: "12px 16px", fontSize: 13, fontWeight: 500, color: "#a5b4fc" }}>{pub}</td>
+                        <td style={{ padding: "12px 16px" }}>
+                          <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 6, background: `${COUNTRY_COLOR[meta?.country ?? getCountry(pub)] ?? "#6b7280"}22`, color: COUNTRY_COLOR[meta?.country ?? getCountry(pub)] ?? "#6b7280", fontWeight: 700 }}>{meta?.country ?? getCountry(pub)}</span>
+                        </td>
+                        <td style={{ textAlign: "right", padding: "12px 16px" }}>
+                          <span style={{ fontSize: 11, padding: "3px 10px", borderRadius: 99, background: `${sc}18`, color: sc, fontWeight: 600, border: `1px solid ${sc}40` }}>{status}</span>
+                        </td>
+                        <td style={{ textAlign: "right", padding: "12px 16px", fontSize: 13, color: "#94a3b8" }}>{meta?.floorPrice ? `€${meta.floorPrice.toFixed(2)}` : "—"}</td>
+                        <td style={{ padding: "12px 16px", fontSize: 12, color: "#6b7280", maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{meta?.note || "—"}</td>
+                        <td style={{ textAlign: "center", padding: "12px 16px" }}>
+                          <button onClick={() => openEditPubMeta(pub)} style={{ background: "rgba(99,102,241,0.12)", border: "1px solid rgba(99,102,241,0.3)", borderRadius: 8, padding: "5px 12px", color: "#a5b4fc", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                            Edit
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+
         </motion.div>
         )}
       </div>
@@ -1758,6 +1876,77 @@ export default function RevRadar() {
                     </button>
                   );
                 })}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ════════ ADMIN PANEL — Edit/Add modal ════════ */}
+      <AnimatePresence>
+        {editingModal && (
+          <motion.div
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            onClick={() => setEditingModal(null)}
+            style={{ position: "fixed", inset: 0, zIndex: 100, background: "rgba(6,9,18,0.7)", backdropFilter: "blur(6px)", WebkitBackdropFilter: "blur(6px)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <motion.div
+              initial={{ opacity: 0, y: -12, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: -12, scale: 0.98 }}
+              transition={{ duration: 0.18, ease: "easeOut" }}
+              onClick={e => e.stopPropagation()}
+              style={{ width: 420, maxWidth: "90vw", background: "linear-gradient(160deg, rgba(30,35,48,0.98), rgba(15,18,26,0.98))", border: "1px solid rgba(129,140,248,0.3)", borderRadius: 16, boxShadow: "0 30px 80px rgba(0,0,0,0.6), 0 0 60px rgba(99,102,241,0.15)", padding: 28 }}>
+              <h2 style={{ fontSize: 17, fontWeight: 700, color: "#f1f5f9", margin: "0 0 20px" }}>{editingModal.key ? "Uredi publishera" : "Dodaj publishera"}</h2>
+
+              <label style={{ fontSize: 12, color: "#6b7280", display: "block", marginBottom: 6 }}>Naziv publishera</label>
+              <input
+                value={editingModal.data.name}
+                disabled={!!editingModal.key}
+                onChange={e => setEditingModal(m => m && { ...m, data: { ...m.data, name: e.target.value } })}
+                style={{ width: "100%", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 13, outline: "none", marginBottom: 14, boxSizing: "border-box", opacity: editingModal.key ? 0.6 : 1 }}
+              />
+
+              <label style={{ fontSize: 12, color: "#6b7280", display: "block", marginBottom: 6 }}>Zemlja</label>
+              <select
+                value={editingModal.data.country}
+                onChange={e => setEditingModal(m => m && { ...m, data: { ...m.data, country: e.target.value } })}
+                style={{ width: "100%", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 13, outline: "none", marginBottom: 14 }}>
+                {["HR", "RS", "BA", "ME", "MK"].map(c => <option key={c} value={c} style={{ background: "#1e2330" }}>{c}</option>)}
+              </select>
+
+              <label style={{ fontSize: 12, color: "#6b7280", display: "block", marginBottom: 6 }}>Status</label>
+              <select
+                value={editingModal.data.status}
+                onChange={e => setEditingModal(m => m && { ...m, data: { ...m.data, status: e.target.value as PubStatus } })}
+                style={{ width: "100%", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 13, outline: "none", marginBottom: 14 }}>
+                {(["Aktivan", "Neaktivan", "Suspendovan"] as PubStatus[]).map(s => <option key={s} value={s} style={{ background: "#1e2330" }}>{s}</option>)}
+              </select>
+
+              <label style={{ fontSize: 12, color: "#6b7280", display: "block", marginBottom: 6 }}>Floor price (€)</label>
+              <input
+                type="number" step="0.01"
+                value={editingModal.data.floorPrice}
+                onChange={e => setEditingModal(m => m && { ...m, data: { ...m.data, floorPrice: parseFloat(e.target.value) || 0 } })}
+                style={{ width: "100%", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 13, outline: "none", marginBottom: 14, boxSizing: "border-box" }}
+              />
+
+              <label style={{ fontSize: 12, color: "#6b7280", display: "block", marginBottom: 6 }}>Napomena (interno)</label>
+              <textarea
+                value={editingModal.data.note}
+                onChange={e => setEditingModal(m => m && { ...m, data: { ...m.data, note: e.target.value } })}
+                rows={3}
+                style={{ width: "100%", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 13, outline: "none", marginBottom: 20, boxSizing: "border-box", resize: "vertical" }}
+              />
+
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+                <button onClick={() => setEditingModal(null)} style={{ background: "none", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 8, padding: "9px 16px", color: "#94a3b8", fontSize: 13, cursor: "pointer" }}>
+                  Otkaži
+                </button>
+                <motion.button
+                  onClick={saveEditingModal}
+                  whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }}
+                  style={{ background: "linear-gradient(135deg,#6366f1,#8b5cf6)", border: "none", borderRadius: 8, padding: "9px 18px", color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+                  Sačuvaj
+                </motion.button>
               </div>
             </motion.div>
           </motion.div>
